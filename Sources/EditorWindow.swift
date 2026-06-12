@@ -694,6 +694,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         undoManager?.setActionName("Delete Rows")
         tableView.removeRows(at: IndexSet(sorted), withAnimation: [])
         markEdited()
+        if csvDocument.rowCount > 0, let first = sorted.first {
+            let row = min(max(0, first - 1), csvDocument.rowCount - 1)
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            tableView.scrollRowToVisible(row)
+        }
     }
 
     // MARK: - Column operations
