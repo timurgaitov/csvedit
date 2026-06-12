@@ -257,6 +257,21 @@ c6.tableView.scrollRowToVisible(199_999)
 expectEqual(renderedValue(c6, row: 199_999, col: 1), "v199999", "last row renders after jump")
 c6.close()
 
+// MARK: 12. Line numbers & font size
+
+print("line numbers & font size:")
+let ruler = c.tableView.enclosingScrollView?.verticalRulerView
+expect(ruler is LineNumberRulerView, "line number ruler installed")
+expect((ruler?.ruleThickness ?? 0) >= 28, "ruler has visible thickness")
+let baseHeight = c.tableView.rowHeight
+c.increaseFontSize(nil)
+expect(c.tableView.rowHeight > baseHeight, "⌘+ increases row height")
+c.resetFontSize(nil)
+expectEqual(c.tableView.rowHeight, baseHeight, "⌘0 restores default size")
+c.decreaseFontSize(nil)
+expect(c.tableView.rowHeight < baseHeight, "⌘− decreases row height")
+c.resetFontSize(nil)
+
 c.close()
 
 // MARK: - Done

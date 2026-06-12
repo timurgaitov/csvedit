@@ -24,6 +24,32 @@ final class EditorTableView: NSTableView {
     }
 }
 
+/// Vertical ruler that draws 1-based row numbers. Unlike a table column it
+/// stays fixed while the table scrolls horizontally and never shifts column
+/// indices (cell editing, header menus and the UI tests address columns by
+/// document index).
+final class LineNumberRulerView: NSRulerView {
+    weak var tableView: NSTableView?
+    var font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let tableView else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let range = tableView.rows(in: tableView.visibleRect)
+        for row in range.location..<(range.location + range.length) {
+            let rowRect = convert(tableView.rect(ofRow: row), from: tableView)
+            let label = String(row + 1) as NSString
+            let size = label.size(withAttributes: attrs)
+            label.draw(at: NSPoint(x: ruleThickness - size.width - 6,
+                                   y: rowRect.midY - size.height / 2),
+                       withAttributes: attrs)
+        }
+    }
+}
+
 /// Header view that vends a per-column context menu (rename, insert, delete).
 final class EditorHeaderView: NSTableHeaderView {
     var contextMenuBuilder: ((Int) -> NSMenu?)?
@@ -43,8 +69,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     let tableView = EditorTableView() // internal: driven directly by ui tests
     private let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
+    private var lineNumberRuler: LineNumberRulerView?
     private var isSaving = false
     private var customFieldEditor: NSTextView?
+
+    private static let defaultFontSize: CGFloat = 12
+    private var fontSize = EditorWindowController.defaultFontSize
+    private var cellFont = NSFont.monospacedDigitSystemFont(
+        ofSize: EditorWindowController.defaultFontSize, weight: .regular)
 
     /// NSWindowController's inherited undoManager resolves via its (nil)
     /// `document` and returns nil, silently dropping registrations — so own
@@ -106,6 +138,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let ruler = LineNumberRulerView(scrollView: scrollView, orientation: .verticalRuler)
+        ruler.clientView = tableView
+        ruler.tableView = tableView
+        scrollView.verticalRulerView = ruler
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+        lineNumberRuler = ruler
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollBoundsChanged(_:)),
+            name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
 
         let statusBar = NSVisualEffectView()
         statusBar.material = .titlebar
@@ -211,6 +255,37 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         if isSaving { parts.append("saving…") }
         if csvDocument.isDirty { parts.append("edited") }
         statusLabel.stringValue = parts.joined(separator: "   •   ")
+        updateLineNumberWidth()
+    }
+
+    @objc private func scrollBoundsChanged(_ note: Notification) {
+        lineNumberRuler?.needsDisplay = true
+    }
+
+    private func updateLineNumberWidth() {
+        guard let ruler = lineNumberRuler else { return }
+        let widest = "\(max(csvDocument.rowCount, 1))" as NSString
+        let width = widest.size(withAttributes: [.font: ruler.font]).width
+        ruler.ruleThickness = max(28, ceil(width) + 12)
+        ruler.needsDisplay = true
+    }
+
+    // MARK: - Font size
+
+    @objc func increaseFontSize(_ sender: Any?) { setFontSize(fontSize + 1) }
+    @objc func decreaseFontSize(_ sender: Any?) { setFontSize(fontSize - 1) }
+    @objc func resetFontSize(_ sender: Any?) { setFontSize(Self.defaultFontSize) }
+
+    private func setFontSize(_ size: CGFloat) {
+        let clamped = min(max(size, 8), 36)
+        guard clamped != fontSize else { NSSound.beep(); return }
+        fontSize = clamped
+        cellFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+        tableView.rowHeight = ceil(fontSize) + 8
+        tableView.reloadData()
+        lineNumberRuler?.font = NSFont.monospacedDigitSystemFont(
+            ofSize: max(9, fontSize - 2), weight: .regular)
+        updateLineNumberWidth()
     }
 
     private func markEdited() {
@@ -240,6 +315,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         } else {
             cell = makeCellView()
         }
+        cell.textField?.font = cellFont
         cell.textField?.stringValue = csvDocument.value(row: row, col: colIndex)
         return cell
     }
@@ -254,7 +330,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         tf.usesSingleLineMode = true
         tf.cell?.isScrollable = true
         tf.lineBreakMode = .byTruncatingTail
-        tf.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        tf.font = cellFont
         tf.delegate = self
         tf.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(tf)
@@ -730,6 +806,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         case #selector(toggleFirstRowHeader(_:)):
             menuItem.state = csvDocument.hasHeader ? .on : .off
             return !csvDocument.isDirty && csvDocument.table != nil
+        case #selector(increaseFontSize(_:)):
+            return fontSize < 36
+        case #selector(decreaseFontSize(_:)):
+            return fontSize > 8
+        case #selector(resetFontSize(_:)):
+            return fontSize != Self.defaultFontSize
         case #selector(undo(_:)):
             return undoManager?.canUndo ?? false
         case #selector(redo(_:)):

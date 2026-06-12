@@ -115,6 +115,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         main.addItem(submenu(editMenu, title: "Edit"))
 
+        // View
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Increase Font Size",
+                         action: #selector(EditorWindowController.increaseFontSize(_:)),
+                         keyEquivalent: "+")
+        // ⌘= (the unshifted key) must work too, like every macOS app.
+        let increaseAlt = viewMenu.addItem(withTitle: "Increase Font Size",
+                                           action: #selector(EditorWindowController.increaseFontSize(_:)),
+                                           keyEquivalent: "=")
+        increaseAlt.isHidden = true
+        increaseAlt.allowsKeyEquivalentWhenHidden = true
+        viewMenu.addItem(withTitle: "Decrease Font Size",
+                         action: #selector(EditorWindowController.decreaseFontSize(_:)),
+                         keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Actual Size",
+                         action: #selector(EditorWindowController.resetFontSize(_:)),
+                         keyEquivalent: "0")
+        main.addItem(submenu(viewMenu, title: "View"))
+
         // Table
         let tableMenu = NSMenu(title: "Table")
         let addRow = tableMenu.addItem(withTitle: "Add Row",
