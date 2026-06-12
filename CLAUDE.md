@@ -10,13 +10,15 @@ the whole file. See README.md for the user-facing feature list.
 ./build.sh                                   # -> build/csvedit.app (swiftc -O -wmo)
 open build/csvedit.app /tmp/some.csv
 
-# Engine tests (parsing, round-trip saves, 1M-row perf benchmark):
-mkdir -p build/test && cp test/engine_test.swift build/test/main.swift
-swiftc -O -swift-version 5 Sources/CSVTable.swift Sources/Document.swift \
-    build/test/main.swift -o build/engine_test && ./build/engine_test
+./test.sh    # engine tests (parsing, saves, 1M-row perf benchmark)
+             # + in-process UI tests (real NSApplication + controller)
 ```
 
-- The test copy-to-`main.swift` dance exists because the file has top-level code.
+- test.sh copies test files to `main.swift` because they have top-level code.
+- UI tests (`test/ui_test.swift`) drive the real EditorWindowController and
+  NSTableView in-process — no accessibility permissions needed; windows flash
+  briefly on screen. They must call `settle()` between undo-registering
+  actions: NSUndoManager groups registrations per run-loop turn.
 - Build uses `-swift-version 5`: the code is not strict-concurrency clean.
 - Baseline perf on M-series (regressions matter): index ~1.6 GB/s,
   parse ~0.7 µs/row, save ~640 MB/s.
@@ -50,6 +52,10 @@ swiftc -O -swift-version 5 Sources/CSVTable.swift Sources/Document.swift \
   freeze the row count mid-index). Cell edits are safe anytime.
 - The controller property is `csvDocument` because NSWindowController already
   has a `document: AnyObject?` property — don't rename it back.
+- The controller owns `docUndoManager` and overrides `undoManager` /
+  implements windowWillReturnUndoManager. NSWindowController's inherited
+  undoManager resolves via the nil `document` and returns nil — relying on it
+  silently breaks all undo (shipped broken in 1.0.0; caught by the UI tests).
 - The custom field editor (windowWillReturnFieldEditor) has undo disabled on
   purpose: in-cell typing must not pollute the document undo stack.
 - "First Row Is Header" toggle is only valid on a clean document (row IDs are

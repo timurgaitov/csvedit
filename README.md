@@ -36,15 +36,19 @@ open build/csvedit.app
 ## Tests
 
 ```sh
-mkdir -p build/test && cp test/engine_test.swift build/test/main.swift
-swiftc -O -swift-version 5 Sources/CSVTable.swift Sources/Document.swift \
-    build/test/main.swift -o build/engine_test
-./build/engine_test
+./test.sh
 ```
 
-Covers RFC 4180 parsing (quotes, escaped quotes, embedded newlines, CRLF),
-delimiter detection (`,` `;` tab `|`), edit/save round trips, and a 1M-row
-performance benchmark.
+Two suites:
+
+- **Engine tests** — RFC 4180 parsing (quotes, escaped quotes, embedded
+  newlines, CRLF), delimiter detection (`,` `;` tab `|`), edit/save round
+  trips, and a 1M-row performance benchmark.
+- **UI integration tests** — boot a real `NSApplication` and drive real
+  window controllers in-process: open → render → edit → undo/redo →
+  row/column ops → async save → reopen, asserting on document state and the
+  bytes written to disk. No accessibility permissions needed; windows appear
+  briefly on screen while they run.
 
 ## Features
 

@@ -40,11 +40,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     let csvDocument = CSVDocument()
     var onClose: ((EditorWindowController) -> Void)?
 
-    private let tableView = EditorTableView()
+    let tableView = EditorTableView() // internal: driven directly by ui tests
     private let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var isSaving = false
     private var customFieldEditor: NSTextView?
+
+    /// NSWindowController's inherited undoManager resolves via its (nil)
+    /// `document` and returns nil, silently dropping registrations — so own
+    /// one explicitly and serve it to both the responder chain and the window.
+    private let docUndoManager = UndoManager()
+    override var undoManager: UndoManager? { docUndoManager }
+
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { docUndoManager }
 
     private static let cellID = NSUserInterfaceItemIdentifier("cell")
 
@@ -388,7 +396,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         performInsertRows(ids: [csvDocument.makeRowID()], at: [sender.tag], thenEdit: true)
     }
 
-    private func performInsertRows(ids: [Int], at indices: [Int], thenEdit: Bool = false) {
+    func performInsertRows(ids: [Int], at indices: [Int], thenEdit: Bool = false) {
         csvDocument.insertRows(ids: ids, at: indices)
         undoManager?.registerUndo(withTarget: self) { me in me.performRemoveRows(at: indices) }
         undoManager?.setActionName("Insert Row")
@@ -401,7 +409,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
-    private func performRemoveRows(at indices: [Int]) {
+    func performRemoveRows(at indices: [Int]) {
         let sorted = indices.sorted()
         let ids = csvDocument.removeRows(at: sorted)
         undoManager?.registerUndo(withTarget: self) { me in me.performInsertRows(ids: ids, at: sorted) }
@@ -451,7 +459,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         performRemoveColumns(at: [col])
     }
 
-    private func performAddColumn(named name: String?, at index: Int) {
+    func performAddColumn(named name: String?, at index: Int) {
         _ = csvDocument.addColumn(named: name, at: index)
         undoManager?.registerUndo(withTarget: self) { me in me.performRemoveColumns(at: [index]) }
         undoManager?.setActionName("Add Column")
@@ -460,7 +468,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         markEdited()
     }
 
-    private func performRemoveColumns(at indices: [Int]) {
+    func performRemoveColumns(at indices: [Int]) {
         let sorted = indices.sorted()
         let logicals = csvDocument.removeColumns(at: sorted)
         undoManager?.registerUndo(withTarget: self) { me in
@@ -481,7 +489,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         markEdited()
     }
 
-    private func performRenameColumn(displayIndex: Int, newName: String?) {
+    func performRenameColumn(displayIndex: Int, newName: String?) {
         guard displayIndex < csvDocument.colCount else { return }
         let logical = csvDocument.colMap[displayIndex]
         let old = csvDocument.headerNames[logical]
