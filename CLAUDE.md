@@ -2,7 +2,7 @@
 
 Native macOS CSV editor (Swift + AppKit, no dependencies, no Xcode project).
 Performance is the product: never block the main thread, never load or copy
-the whole file. See README.md for the user-facing feature list.
+the whole file.
 
 ## Build, test, run
 
