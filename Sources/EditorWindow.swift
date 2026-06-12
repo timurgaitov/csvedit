@@ -1,15 +1,42 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Table view with Return-to-edit and a row context menu.
+/// Table view with Return/e-to-edit, Esc-to-close-find, /-to-find, cell-wise
+/// cursor keys (←/→ and vim-style hjkl) and a row context menu.
 final class EditorTableView: NSTableView {
     var onReturnKey: (() -> Void)?
     var contextMenuBuilder: ((Int) -> NSMenu?)?
+    /// Returns true if the key was consumed (find bar visible).
+    var onEscape: (() -> Bool)?
+    var onMoveCell: ((_ dRow: Int, _ dCol: Int) -> Void)?
+    var onStartFind: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36 || event.keyCode == 76, let onReturnKey { // return / enter
             onReturnKey()
             return
+        }
+        if event.keyCode == 53, let onEscape, onEscape() { return } // esc
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            if let onMoveCell {
+                switch event.keyCode {
+                case 123: onMoveCell(0, -1); return // ←  (↑/↓ stay native)
+                case 124: onMoveCell(0, 1); return  // →
+                default: break
+                }
+                switch event.charactersIgnoringModifiers {
+                case "h": onMoveCell(0, -1); return
+                case "j": onMoveCell(1, 0); return
+                case "k": onMoveCell(-1, 0); return
+                case "l": onMoveCell(0, 1); return
+                default: break
+                }
+            }
+            switch event.charactersIgnoringModifiers {
+            case "e": if let onReturnKey { onReturnKey(); return }
+            case "/": if let onStartFind { onStartFind(); return }
+            default: break
+            }
         }
         super.keyDown(with: event)
     }
@@ -21,6 +48,24 @@ final class EditorTableView: NSTableView {
             selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         return contextMenuBuilder?(row)
+    }
+}
+
+/// Search field that claims ⌘Return while being edited — it must win over
+/// the Add Row menu item, which owns that key equivalent globally.
+final class FindSearchField: NSSearchField {
+    var onCommandReturn: (() -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.keyCode == 36 || event.keyCode == 76, // return / enter
+           event.modifierFlags.contains(.command),
+           event.modifierFlags.intersection([.shift, .option, .control]).isEmpty,
+           currentEditor() != nil,
+           let onCommandReturn {
+            return onCommandReturn()
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 
@@ -61,7 +106,8 @@ final class EditorHeaderView: NSTableHeaderView {
 }
 
 final class EditorWindowController: NSWindowController, NSWindowDelegate,
-    NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
+    NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate,
+    NSMenuItemValidation {
 
     let csvDocument = CSVDocument()
     var onClose: ((EditorWindowController) -> Void)?
@@ -72,6 +118,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private var lineNumberRuler: LineNumberRulerView?
     private var isSaving = false
     private var customFieldEditor: NSTextView?
+
+    // Find bar (internal: driven directly by ui tests)
+    let findBar = NSVisualEffectView()
+    let searchField = FindSearchField()
+    let findMatchLabel = NSTextField(labelWithString: "")
+    private(set) var findMatches: [(row: Int, col: Int)] = []
+    private(set) var findCurrent: Int?
+
+    /// Column component of the cell cursor; the row component is the table's
+    /// selected row. Return edits this cell, ←/→/hjkl move it.
+    private(set) var currentCol = 0
+    private var lastCursorCell: (row: Int, col: Int)?
+    private var findGeneration = 0
+    private var findScanComplete = true
+    private var scrollTopToContent: NSLayoutConstraint!
+    private var scrollTopToFindBar: NSLayoutConstraint!
 
     private static let defaultFontSize: CGFloat = 12
     private var fontSize = EditorWindowController.defaultFontSize
@@ -117,6 +179,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         tableView.dataSource = self
         tableView.delegate = self
         tableView.allowsMultipleSelection = true
+        tableView.allowsTypeSelect = false // letters navigate/edit, not jump rows
         tableView.allowsColumnReordering = false
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.columnAutoresizingStyle = .noColumnAutoresizing
@@ -131,7 +194,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         tableView.headerView = header
         tableView.contextMenuBuilder = { [weak self] row in self?.rowMenu(forRow: row) }
         tableView.onReturnKey = { [weak self] in self?.editSelectedRow() }
+        tableView.onEscape = { [weak self] in
+            guard let self, !self.findBar.isHidden else { return false }
+            self.closeFind(nil)
+            return true
+        }
+        tableView.onMoveCell = { [weak self] dRow, dCol in
+            self?.moveCellSelection(dRow: dRow, dCol: dCol)
+        }
+        tableView.onStartFind = { [weak self] in self?.showFind(nil) }
         tableView.target = self
+        tableView.action = #selector(tableClicked(_:))
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
 
         scrollView.documentView = tableView
@@ -151,6 +224,32 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             self, selector: #selector(scrollBoundsChanged(_:)),
             name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
 
+        findBar.material = .titlebar
+        findBar.blendingMode = .withinWindow
+        findBar.translatesAutoresizingMaskIntoConstraints = false
+        findBar.isHidden = true
+
+        searchField.placeholderString = "Find  (⏎ next, ⇧⏎ previous, ⌘⏎ edit, esc done)"
+        searchField.delegate = self
+        searchField.onCommandReturn = { [weak self] in
+            guard let self else { return false }
+            let hasMatch = self.currentFindPosition != nil
+            self.closeFind(nil)
+            if hasMatch { self.editSelectedRow() }
+            return true
+        }
+
+        findMatchLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        findMatchLabel.textColor = .secondaryLabelColor
+        findMatchLabel.lineBreakMode = .byTruncatingTail
+        findMatchLabel.setContentHuggingPriority(.init(1), for: .horizontal)
+
+        let findStack = NSStackView(views: [searchField, findMatchLabel])
+        findStack.orientation = .horizontal
+        findStack.spacing = 8
+        findStack.translatesAutoresizingMaskIntoConstraints = false
+        findBar.addSubview(findStack)
+
         let statusBar = NSVisualEffectView()
         statusBar.material = .titlebar
         statusBar.blendingMode = .withinWindow
@@ -163,10 +262,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         statusBar.addSubview(statusLabel)
 
         content.addSubview(scrollView)
+        content.addSubview(findBar)
         content.addSubview(statusBar)
 
+        scrollTopToContent = scrollView.topAnchor.constraint(equalTo: content.topAnchor)
+        scrollTopToFindBar = scrollView.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: content.topAnchor),
+            findBar.topAnchor.constraint(equalTo: content.topAnchor),
+            findBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            findBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            findBar.heightAnchor.constraint(equalToConstant: 34),
+            findStack.leadingAnchor.constraint(equalTo: findBar.leadingAnchor, constant: 8),
+            findStack.trailingAnchor.constraint(equalTo: findBar.trailingAnchor, constant: -8),
+            findStack.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
+            searchField.widthAnchor.constraint(equalToConstant: 300),
+            scrollTopToContent,
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
@@ -204,6 +315,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         rebuildTableColumns()
         tableView.reloadData()
         updateStatus()
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        window?.makeFirstResponder(tableView)
     }
 
     func loadFile(at url: URL) {
@@ -237,6 +350,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
                 self.rebuildTableColumns()
                 self.tableView.reloadData()
                 self.updateStatus()
+            }
+            if self.tableView.selectedRow < 0 && self.csvDocument.rowCount > 0 {
+                self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                // An empty table refuses first-responder status, so focus it
+                // only now that it has content — arrow keys work right away.
+                self.window?.makeFirstResponder(self.tableView)
             }
         }
         table.startIndexing()
@@ -291,6 +410,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private func markEdited() {
         window?.isDocumentEdited = true
         updateStatus()
+        // Any edit can shift or change match positions.
+        if !findBar.isHidden { restartFind(jumpToFirst: false) }
     }
 
     private func editsAllowed(structuralRows: Bool = false) -> Bool {
@@ -317,6 +438,21 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
         cell.textField?.font = cellFont
         cell.textField?.stringValue = csvDocument.value(row: row, col: colIndex)
+        if let tf = cell.textField {
+            if let m = currentFindPosition, m.row == row, m.col == colIndex {
+                tf.drawsBackground = true
+                tf.backgroundColor = .findHighlightColor
+                tf.textColor = .black
+            } else {
+                tf.drawsBackground = false
+                tf.textColor = .labelColor
+            }
+        }
+        cell.wantsLayer = true
+        let isCursor = row == tableView.selectedRow && colIndex == currentCol
+        cell.layer?.borderWidth = isCursor ? 2 : 0
+        cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        cell.layer?.cornerRadius = 3
         return cell
     }
 
@@ -344,6 +480,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     // MARK: - Cell editing
+
+    func controlTextDidChange(_ obj: Notification) {
+        if obj.object as AnyObject === searchField {
+            restartFind(jumpToFirst: true)
+        }
+    }
+
+    /// Fires when the search field's cancel button clears the query.
+    func searchFieldDidEndSearching(_ sender: NSSearchField) {
+        restartFind(jumpToFirst: false)
+    }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard let tf = obj.object as? NSTextField else { return }
@@ -381,6 +528,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if control === searchField {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    findPrevious(nil)
+                } else {
+                    findNext(nil)
+                }
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                closeFind(nil)
+                return true
+            default:
+                return false
+            }
+        }
         guard let tf = control as? NSTextField else { return false }
         let row = tableView.row(for: tf)
         let col = tableView.column(for: tf)
@@ -419,7 +582,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private func editCell(row: Int, col: Int) {
         guard editsAllowed(), row >= 0, row < csvDocument.rowCount,
               col >= 0, col < csvDocument.colCount else { return }
+        currentCol = col
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        refreshCellCursor()
         tableView.scrollRowToVisible(row)
         tableView.scrollColumnToVisible(col)
         tableView.editColumn(col, row: row, with: nil, select: true)
@@ -428,7 +593,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private func editSelectedRow() {
         let row = tableView.selectedRow
         guard row >= 0 else { return }
-        editCell(row: row, col: 0)
+        editCell(row: row, col: min(currentCol, max(0, csvDocument.colCount - 1)))
+    }
+
+    @objc private func tableClicked(_ sender: Any?) {
+        let col = tableView.clickedColumn
+        guard col >= 0 else { return }
+        currentCol = col
+        refreshCellCursor()
     }
 
     @objc private func tableDoubleClicked(_ sender: Any?) {
@@ -436,6 +608,36 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let col = tableView.clickedColumn
         guard row >= 0, col >= 0 else { return }
         editCell(row: row, col: col)
+    }
+
+    // MARK: - Cell cursor
+
+    func moveCellSelection(dRow: Int, dCol: Int) {
+        let rows = csvDocument.rowCount
+        let cols = csvDocument.colCount
+        guard rows > 0, cols > 0 else { return }
+        let row = tableView.selectedRow < 0
+            ? 0 : max(0, min(rows - 1, tableView.selectedRow + dRow))
+        currentCol = max(0, min(cols - 1, currentCol + dCol))
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        refreshCellCursor() // selectRowIndexes only notifies when the row changed
+        tableView.scrollRowToVisible(row)
+        tableView.scrollColumnToVisible(currentCol)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        refreshCellCursor()
+    }
+
+    /// Reload the cells that gained or lost the cursor so the border redraws.
+    private func refreshCellCursor() {
+        let new: (row: Int, col: Int)? =
+            tableView.selectedRow >= 0 ? (tableView.selectedRow, currentCol) : nil
+        if let old = lastCursorCell, old.row != new?.row || old.col != new?.col {
+            reloadCellIfValid(old)
+        }
+        if let new { reloadCellIfValid(new) }
+        lastCursorCell = new
     }
 
     /// A plain field editor with undo disabled, so in-cell typing doesn't
@@ -588,6 +790,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         rebuildTableColumns()
         tableView.reloadData()
         updateStatus()
+        if !findBar.isHidden { restartFind(jumpToFirst: false) }
     }
 
     // MARK: - Context menus
@@ -679,6 +882,137 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(lines.joined(separator: "\n"), forType: .string)
+    }
+
+    // MARK: - Find
+
+    @objc func showFind(_ sender: Any?) {
+        if findBar.isHidden {
+            findBar.isHidden = false
+            scrollTopToContent.isActive = false
+            scrollTopToFindBar.isActive = true
+        }
+        window?.makeFirstResponder(searchField)
+        searchField.selectText(nil)
+        if !searchField.stringValue.isEmpty { restartFind(jumpToFirst: true) }
+    }
+
+    @objc func closeFind(_ sender: Any?) {
+        guard !findBar.isHidden else { return }
+        findGeneration += 1 // cancel any in-flight scan
+        clearCurrentFindHighlight()
+        findMatches = []
+        findScanComplete = true
+        findBar.isHidden = true
+        scrollTopToFindBar.isActive = false
+        scrollTopToContent.isActive = true
+        window?.makeFirstResponder(tableView)
+    }
+
+    @objc func findNext(_ sender: Any?) { stepFind(1) }
+    @objc func findPrevious(_ sender: Any?) { stepFind(-1) }
+
+    private func stepFind(_ delta: Int) {
+        guard !findMatches.isEmpty else { NSSound.beep(); return }
+        let count = findMatches.count
+        let next: Int
+        if let cur = findCurrent {
+            next = ((cur + delta) % count + count) % count
+        } else {
+            next = delta > 0 ? 0 : count - 1
+        }
+        selectMatch(next)
+    }
+
+    private var currentFindPosition: (row: Int, col: Int)? {
+        guard let cur = findCurrent, cur < findMatches.count else { return nil }
+        return findMatches[cur]
+    }
+
+    private func clearCurrentFindHighlight() {
+        guard let m = currentFindPosition else { findCurrent = nil; return }
+        findCurrent = nil
+        reloadCellIfValid(m)
+    }
+
+    private func selectMatch(_ idx: Int) {
+        let m = findMatches[idx]
+        guard m.row < csvDocument.rowCount, m.col < csvDocument.colCount else {
+            restartFind(jumpToFirst: true) // stale match positions
+            return
+        }
+        clearCurrentFindHighlight()
+        findCurrent = idx
+        currentCol = m.col // Esc + Return then edits the matched cell
+        tableView.selectRowIndexes(IndexSet(integer: m.row), byExtendingSelection: false)
+        refreshCellCursor()
+        tableView.scrollRowToVisible(m.row)
+        tableView.scrollColumnToVisible(m.col)
+        reloadCellIfValid(m)
+        updateFindLabel()
+    }
+
+    private func reloadCellIfValid(_ m: (row: Int, col: Int)) {
+        guard m.row < tableView.numberOfRows, m.col < tableView.numberOfColumns else { return }
+        reloadCell(row: m.row, col: m.col)
+    }
+
+    /// Rescan the document for the query in main-thread chunks, so huge files
+    /// never freeze the UI. A bumped generation cancels stale scans.
+    func restartFind(jumpToFirst: Bool) {
+        findGeneration += 1
+        clearCurrentFindHighlight()
+        findMatches = []
+        findScanComplete = true
+        let query = searchField.stringValue
+        guard !findBar.isHidden, !query.isEmpty else {
+            updateFindLabel()
+            return
+        }
+        findScanComplete = false
+        scanForMatches(from: 0, query: query, generation: findGeneration, jumpToFirst: jumpToFirst)
+    }
+
+    private func scanForMatches(from startRow: Int, query: String, generation: Int,
+                                jumpToFirst: Bool) {
+        guard generation == findGeneration else { return }
+        let endRow = min(startRow + 4096, csvDocument.rowCount)
+        let cols = csvDocument.colCount
+        let hadMatches = !findMatches.isEmpty
+        for row in startRow..<endRow {
+            for col in 0..<cols where csvDocument.value(row: row, col: col)
+                .range(of: query, options: .caseInsensitive) != nil {
+                findMatches.append((row, col))
+            }
+        }
+        if jumpToFirst, !hadMatches, !findMatches.isEmpty {
+            selectMatch(0)
+        }
+        if endRow < csvDocument.rowCount {
+            updateFindLabel()
+            DispatchQueue.main.async { [weak self] in
+                self?.scanForMatches(from: endRow, query: query, generation: generation,
+                                     jumpToFirst: jumpToFirst)
+            }
+        } else {
+            findScanComplete = true
+            updateFindLabel()
+        }
+    }
+
+    private func updateFindLabel() {
+        if searchField.stringValue.isEmpty {
+            findMatchLabel.stringValue = ""
+        } else if findMatches.isEmpty {
+            findMatchLabel.stringValue = findScanComplete ? "Not found" : "Searching…"
+        } else {
+            let total = "\(findMatches.count)\(findScanComplete ? "" : "+")"
+            if let cur = findCurrent {
+                findMatchLabel.stringValue = "\(cur + 1) of \(total)"
+            } else {
+                findMatchLabel.stringValue = "\(total) matches"
+            }
+        }
     }
 
     // MARK: - Undo plumbing
@@ -812,6 +1146,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             return fontSize > 8
         case #selector(resetFontSize(_:)):
             return fontSize != Self.defaultFontSize
+        case #selector(findNext(_:)), #selector(findPrevious(_:)):
+            return !findBar.isHidden && !searchField.stringValue.isEmpty
         case #selector(undo(_:)):
             return undoManager?.canUndo ?? false
         case #selector(redo(_:)):

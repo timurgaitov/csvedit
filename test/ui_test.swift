@@ -274,6 +274,109 @@ c.resetFontSize(nil)
 
 c.close()
 
+// MARK: 13. Find (⌘F)
+
+print("find:")
+let findURL = fixture("find.csv", "name,qty\napple,1\nbanana,2\npineapple,3\n")
+let c7 = openController(findURL)
+c7.showFind(nil)
+expect(!c7.findBar.isHidden, "⌘F shows the find bar")
+c7.searchField.stringValue = "apple"
+c7.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                     object: c7.searchField))
+expectEqual(c7.findMatches.count, 2, "two matching cells found")
+expectEqual(c7.findMatchLabel.stringValue, "1 of 2", "label shows position and total")
+expectEqual(c7.tableView.selectedRow, 0, "jumps to first match")
+c7.findNext(nil)
+expectEqual(c7.tableView.selectedRow, 2, "next moves to second match")
+expectEqual(c7.findMatchLabel.stringValue, "2 of 2", "label follows traversal")
+c7.findNext(nil)
+expectEqual(c7.tableView.selectedRow, 0, "next wraps to first match")
+c7.findPrevious(nil)
+expectEqual(c7.tableView.selectedRow, 2, "previous wraps back to last match")
+
+// Return in the search field advances (no current event in tests → no shift).
+let dummyTextView = NSTextView()
+expect(c7.control(c7.searchField, textView: dummyTextView,
+                  doCommandBy: #selector(NSResponder.insertNewline(_:))),
+       "return key is consumed by the search field")
+expectEqual(c7.tableView.selectedRow, 0, "return advances to next match")
+
+c7.searchField.stringValue = "zzz"
+c7.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                     object: c7.searchField))
+expectEqual(c7.findMatchLabel.stringValue, "Not found", "label reports no matches")
+
+// Edits restart the search with fresh positions.
+c7.searchField.stringValue = "apple"
+c7.restartFind(jumpToFirst: false)
+commitEdit(c7, row: 1, col: 0, value: "crabapple")
+expectEqual(c7.findMatches.count, 3, "search rescans after an edit")
+
+expect(c7.control(c7.searchField, textView: dummyTextView,
+                  doCommandBy: #selector(NSResponder.cancelOperation(_:))),
+       "esc is consumed by the search field")
+expect(c7.findBar.isHidden, "esc hides the find bar")
+c7.close()
+
+// MARK: 14. Cell cursor & keyboard navigation
+
+print("cell navigation:")
+let navURL = fixture("nav.csv", "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
+let c8 = openController(navURL)
+func navKey(_ chars: String, _ keyCode: UInt16) {
+    let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                             timestamp: 0, windowNumber: c8.window?.windowNumber ?? 0,
+                             context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                             isARepeat: false, keyCode: keyCode)!
+    c8.tableView.keyDown(with: e)
+}
+expectEqual(c8.tableView.selectedRow, 0, "first row selected on open")
+expect(c8.window?.firstResponder === c8.tableView, "table focused on open")
+expectEqual(c8.currentCol, 0, "cursor starts at column 0")
+navKey("l", 37)
+expectEqual(c8.currentCol, 1, "l moves right")
+navKey("j", 38)
+expectEqual(c8.tableView.selectedRow, 1, "j moves down")
+navKey("k", 40)
+expectEqual(c8.tableView.selectedRow, 0, "k moves up")
+navKey("h", 4)
+expectEqual(c8.currentCol, 0, "h moves left")
+navKey("h", 4)
+expectEqual(c8.currentCol, 0, "left edge clamps")
+navKey(String(UnicodeScalar(0xF703)!), 124) // →
+expectEqual(c8.currentCol, 1, "right arrow moves right")
+navKey(String(UnicodeScalar(0xF702)!), 123) // ←
+expectEqual(c8.currentCol, 0, "left arrow moves left")
+navKey(String(UnicodeScalar(0xF701)!), 125) // ↓ — native row move
+expectEqual(c8.tableView.selectedRow, 1, "down arrow moves down")
+
+// e starts editing the cursor cell instead of type-select jumping.
+navKey("e", 14)
+expect(c8.window?.firstResponder is NSTextView, "e starts editing the cursor cell")
+c8.window?.makeFirstResponder(c8.tableView)
+settle()
+
+// "/" opens find; ⌘Return edits the matched cell in one step.
+navKey("/", 44)
+expect(!c8.findBar.isHidden, "/ opens the find bar")
+c8.searchField.stringValue = "5"
+c8.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                     object: c8.searchField))
+expectEqual(c8.tableView.selectedRow, 1, "find jumps to matched row")
+expectEqual(c8.currentCol, 1, "find puts the cursor on the matched column")
+let cmdReturn = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                                 timestamp: 0, windowNumber: c8.window?.windowNumber ?? 0,
+                                 context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                 isARepeat: false, keyCode: 36)!
+expect(c8.searchField.performKeyEquivalent(with: cmdReturn),
+       "⌘⏎ is consumed by the search field")
+expect(c8.findBar.isHidden, "⌘⏎ closes the find bar")
+expect(c8.window?.firstResponder is NSTextView, "⌘⏎ starts editing the matched cell")
+c8.window?.makeFirstResponder(c8.tableView)
+settle()
+c8.close()
+
 // MARK: - Done
 
 try? FileManager.default.removeItem(at: tmpDir)
