@@ -120,9 +120,14 @@ final class CSVTable {
             let end = range.upperBound
             let d = delimiter
             while true {
-                if i < end && p[i] == 0x22 {
+                // Excel-style leniency: a quote after optional spaces still
+                // opens a quoted field (strict RFC 4180 would treat the
+                // spaces as field data and the commas inside as delimiters).
+                var q = i
+                while q < end && p[q] == 0x20 { q += 1 }
+                if q < end && p[q] == 0x22 {
                     var bytes: [UInt8] = []
-                    i += 1
+                    i = q + 1
                     while i < end {
                         if p[i] == 0x22 {
                             if i + 1 < end && p[i + 1] == 0x22 {

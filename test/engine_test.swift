@@ -52,6 +52,13 @@ do {
     expectEqual(t.fields(forRow: 2), ["trailing", ""], "trailing empty field")
 }
 do {
+    // Quote after a space still opens a quoted field (Excel-style leniency);
+    // unquoted fields keep their leading spaces.
+    let t = table(from: "a,b,c\nv1, \"x, y, z\", v3\np, q, r\n")
+    expectEqual(t.fields(forRow: 1), ["v1", "x, y, z", " v3"], "space before opening quote")
+    expectEqual(t.fields(forRow: 2), ["p", " q", " r"], "unquoted fields keep leading spaces")
+}
+do {
     expectEqual(CSVTable.detectDelimiter(in: Data("a;b;c\n1;2;3\n".utf8)), 0x3B, "semicolon detection")
     expectEqual(CSVTable.detectDelimiter(in: Data("a\tb\tc\n".utf8)), 0x09, "tab detection")
     expectEqual(CSVTable.detectDelimiter(in: Data("\"a;b\",c\n".utf8)), 0x2C, "quoted delimiters ignored")
