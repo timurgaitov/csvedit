@@ -103,13 +103,34 @@ final class LineNumberRulerView: NSRulerView {
     }
 }
 
-/// Header view that vends a per-column context menu (rename, insert, delete).
+/// Header view that vends a per-column context menu (rename, insert, delete)
+/// and auto-sizes a column when its resize divider is double-clicked.
 final class EditorHeaderView: NSTableHeaderView {
     var contextMenuBuilder: ((Int) -> NSMenu?)?
+    var onSizeToFit: ((Int) -> Void)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         return contextMenuBuilder?(column(at: point))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, let col = dividerColumn(for: event) {
+            onSizeToFit?(col)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// The column whose right-edge resize divider sits under `event`, if any.
+    private func dividerColumn(for event: NSEvent) -> Int? {
+        guard let tableView else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let tolerance: CGFloat = 4
+        for col in 0..<tableView.numberOfColumns {
+            if abs(point.x - headerRect(ofColumn: col).maxX) <= tolerance { return col }
+        }
+        return nil
     }
 }
 
@@ -199,6 +220,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
         let header = EditorHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 24))
         header.contextMenuBuilder = { [weak self] col in self?.headerMenu(forColumn: col) }
+        header.onSizeToFit = { [weak self] col in self?.sizeColumnToFit(col) }
         tableView.headerView = header
         tableView.contextMenuBuilder = { [weak self] row in self?.rowMenu(forRow: row) }
         tableView.onReturnKey = { [weak self] in self?.editSelectedRow() }
@@ -311,6 +333,31 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             column.maxWidth = 4000
             tableView.addTableColumn(column)
         }
+    }
+
+    /// Fit a column's width to its content. Only the currently visible rows are
+    /// measured — never scan the whole file (it could be millions of rows).
+    private func sizeColumnToFit(_ displayCol: Int) {
+        guard displayCol >= 0, displayCol < tableView.tableColumns.count else { return }
+        let column = tableView.tableColumns[displayCol]
+
+        let headerFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        var maxWidth = (csvDocument.headerTitle(col: displayCol) as NSString)
+            .size(withAttributes: [.font: headerFont]).width
+
+        let cellAttrs: [NSAttributedString.Key: Any] = [.font: cellFont]
+        let visible = tableView.rows(in: tableView.visibleRect)
+        if visible.length > 0 {
+            for row in visible.location..<(visible.location + visible.length) {
+                let w = (csvDocument.value(row: row, col: displayCol) as NSString)
+                    .size(withAttributes: cellAttrs).width
+                if w > maxWidth { maxWidth = w }
+            }
+        }
+
+        // Cell insets (2+2) plus a little breathing room.
+        let newWidth = (maxWidth + 12).rounded(.up)
+        column.width = max(column.minWidth, min(newWidth, column.maxWidth))
     }
 
     // MARK: - Document lifecycle
