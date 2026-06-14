@@ -549,14 +549,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let col = tableView.column(for: tf)
         guard row >= 0, col >= 0 else { return false }
         switch selector {
-        case #selector(NSResponder.insertTab(_:)):
-            endEditingAndMove(row: row, col: col, dRow: 0, dCol: 1)
-            return true
-        case #selector(NSResponder.insertBacktab(_:)):
-            endEditingAndMove(row: row, col: col, dRow: 0, dCol: -1)
-            return true
-        case #selector(NSResponder.insertNewline(_:)):
-            endEditingAndMove(row: row, col: col, dRow: 1, dCol: 0)
+        case #selector(NSResponder.insertTab(_:)),
+             #selector(NSResponder.insertBacktab(_:)),
+             #selector(NSResponder.insertNewline(_:)):
+            window?.makeFirstResponder(tableView) // commits via controlTextDidEndEditing; stay on this cell
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             tf.stringValue = csvDocument.value(row: row, col: col)
@@ -565,18 +561,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         default:
             return false
         }
-    }
-
-    private func endEditingAndMove(row: Int, col: Int, dRow: Int, dCol: Int) {
-        window?.makeFirstResponder(tableView) // commits via controlTextDidEndEditing
-        var r = row + dRow
-        var c = col + dCol
-        if dCol != 0 {
-            if c >= csvDocument.colCount { c = 0; r += 1 }
-            if c < 0 { c = csvDocument.colCount - 1; r -= 1 }
-        }
-        guard r >= 0, r < csvDocument.rowCount, c >= 0, c < csvDocument.colCount else { return }
-        editCell(row: r, col: c)
     }
 
     private func editCell(row: Int, col: Int) {
