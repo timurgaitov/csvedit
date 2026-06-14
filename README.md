@@ -45,6 +45,7 @@ Other:
 | --- | --- |
 | `⌘⏎` | Add row below |
 | `⌘⌫` | Delete selected rows |
+| `⌘G` or `:` | Go to line |
 | `⌘+` / `⌘−` / `⌘0` | Zoom font size |
 | `⌘S` / `⌘⇧S` | Save / Save As |
 | `⌘Z` / `⌘⇧Z` | Undo / Redo |
