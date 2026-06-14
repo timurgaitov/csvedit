@@ -266,13 +266,24 @@ final class CSVDocument {
             try flushIfNeeded()
         }
 
-        if hasHeader {
-            try writeFields((0..<colCount).map { headerTitle(col: $0) })
-        }
-
         let fastPath = fileColCount > 0 && colMap == Array(0..<fileColCount)
         let count = rowCount
         let headerOff = headerOffset
+
+        if hasHeader {
+            // Raw-copy the file's header row when the column layout is identity
+            // and no header was renamed: this preserves it byte-for-byte and,
+            // crucially, never invents synthetic columns when the header is
+            // narrower than the widest sampled data row (which drives colCount).
+            if let t = table, fastPath, headerNames.isEmpty, t.safeRowCount > 0 {
+                let range = t.byteRange(ofRow: 0)
+                buf.append(t.data.subdata(in: range))
+                buf.append(0x0A)
+                try flushIfNeeded()
+            } else {
+                try writeFields((0..<colCount).map { headerTitle(col: $0) })
+            }
+        }
 
         if let t = table {
             try t.data.withUnsafeBytes { (fileBuf: UnsafeRawBufferPointer) in
@@ -285,7 +296,23 @@ final class CSVDocument {
                         buf.append(0x0A)
                         try flushIfNeeded()
                     } else {
-                        try writeFields((0..<colCount).map { value(row: r, col: $0, useCache: false) })
+                        var out = (0..<colCount).map { value(row: r, col: $0, useCache: false) }
+                        // Preserve fields beyond the detected column count for a
+                        // ragged file row wider than the first-100-row sample.
+                        // colCount is derived from only the first 100 rows, so a
+                        // later, wider row has trailing fields at logical indices
+                        // >= fileColCount that colMap never maps (those indices are
+                        // treated as editor-added/empty columns). Re-encoding the
+                        // row would silently drop them. They are always orphaned —
+                        // appending them at the end loses no data and cannot
+                        // duplicate a mapped value, regardless of column layout.
+                        if id < newRowIDBase {
+                            let fields = t.fields(forRow: id + headerOff, useCache: false)
+                            if fields.count > fileColCount {
+                                out.append(contentsOf: fields[fileColCount...])
+                            }
+                        }
+                        try writeFields(out)
                     }
                 }
             }

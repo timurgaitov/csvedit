@@ -145,6 +145,50 @@ do {
     expectEqual(saved.fields(forRow: 2), ["2", ""], "blank doc row 2")
 }
 
+print("data integrity — ragged rows & header width:")
+do {
+    // colCount is sampled from the first 100 rows only. A later, wider row must
+    // keep its trailing fields when re-encoded — otherwise a single cell edit on
+    // it silently truncates data. Regression test for the ragged-row data loss.
+    var text = "a,b,c\n"
+    for i in 0..<100 { text += "\(i),x,y\n" }
+    text += "WIDE,1,2,3,4\n"               // 5 fields at data-row index 100
+    let src = tmpDir.appendingPathComponent("ragged.csv")
+    try Data(text.utf8).write(to: src)
+    let t = try CSVTable(url: src); t.indexSynchronously()
+    let doc = CSVDocument()
+    doc.attach(table: t, url: src); doc.setUpColumns()
+    expectEqual(doc.colCount, 3, "colCount sampled from first 100 rows")
+
+    // Editing the wide row forces a re-encode of just that row (fast path).
+    doc.setValue("EDIT", row: 100, col: 0)
+    let edited = try roundTrip(doc, name: "ragged-edit.csv")
+    expectEqual(edited.fields(forRow: 101), ["EDIT", "1", "2", "3", "4"],
+                "edited ragged row keeps all five fields")
+
+    // Adding a column forces a full re-encode (non-identity layout); the wide
+    // row's orphaned tail must still survive.
+    let doc2 = CSVDocument()
+    doc2.attach(table: t, url: src); doc2.setUpColumns()
+    _ = doc2.addColumn(named: "z", at: 3)
+    let widened = try roundTrip(doc2, name: "ragged-col.csv")
+    expectEqual(widened.fields(forRow: 101), ["WIDE", "1", "2", "", "3", "4"],
+                "column add preserves ragged row tail")
+}
+do {
+    // A header narrower than the widest data row must not gain synthetic
+    // letter-named columns on save (the header is reconstructed, not raw-copied
+    // in the old code). Pure round-trip, no edits.
+    let src = tmpDir.appendingPathComponent("narrowhdr.csv")
+    try Data("a,b\n1,2,3\n4,5,6\n".utf8).write(to: src)
+    let t = try CSVTable(url: src); t.indexSynchronously()
+    let doc = CSVDocument()
+    doc.attach(table: t, url: src); doc.setUpColumns()
+    let saved = try roundTrip(doc, name: "narrowhdr-out.csv")
+    expectEqual(saved.fields(forRow: 0), ["a", "b"], "narrow header not padded with synthetic column")
+    expectEqual(saved.fields(forRow: 1), ["1", "2", "3"], "wider data row intact")
+}
+
 // MARK: - Performance
 
 print("performance (1,000,000 rows × 8 columns):")

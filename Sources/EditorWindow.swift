@@ -1119,9 +1119,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     // MARK: - Saving
 
+    /// A save is safe only once the background index is complete. Saving
+    /// mid-index would serialize just the rows discovered so far (rowCount uses
+    /// safeRowCount) and atomically replace the file, destroying the unindexed
+    /// tail. No table = blank document, always safe.
+    var isIndexed: Bool { csvDocument.table?.indexingComplete ?? true }
+
     @objc func saveDocument(_ sender: Any?) {
         guard !isSaving else { return }
-        if let t = csvDocument.table, !t.indexingComplete { NSSound.beep(); return }
+        guard isIndexed else { NSSound.beep(); return }
         if let url = csvDocument.url {
             saveTo(url)
         } else {
@@ -1131,7 +1137,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     @objc func saveDocumentAs(_ sender: Any?) {
         guard !isSaving, let window else { return }
-        if let t = csvDocument.table, !t.indexingComplete { NSSound.beep(); return }
+        guard isIndexed else { NSSound.beep(); return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.allowsOtherFileTypes = true
@@ -1187,6 +1193,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     /// Synchronous save used by the close-window path.
     private func saveSynchronously() -> Bool {
+        // Never write a partial file: a save before indexing finishes would
+        // truncate the document to the rows discovered so far. windowShouldClose
+        // already steers away from this; this is the load-bearing safety net.
+        guard isIndexed else { return false }
         var url = csvDocument.url
         if url == nil {
             let panel = NSSavePanel()
@@ -1210,6 +1220,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard csvDocument.isDirty else { return true }
+        if !isIndexed {
+            // The file is still being read; a save now would lose the unindexed
+            // tail. Offer only to discard the edits or stay open — never a
+            // partial save.
+            let alert = NSAlert()
+            alert.messageText = "Still reading “\(window?.title ?? "this document")”"
+            alert.informativeText = "csvedit hasn’t finished reading the file, so your changes can’t be saved yet without losing the part not read. Close without saving, or cancel and try again once loading finishes."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Don’t Save")
+            return alert.runModal() != .alertFirstButtonReturn
+        }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes made to “\(window?.title ?? "this document")”?"
         alert.informativeText = "Your changes will be lost if you don't save them."
@@ -1235,11 +1256,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
-            return !isSaving && (csvDocument.table?.indexingComplete ?? true)
+            return !isSaving && isIndexed
         case #selector(deleteSelectedRows(_:)), #selector(copy(_:)):
             return !tableView.selectedRowIndexes.isEmpty
         case #selector(addRowBelow(_:)):
-            return !isSaving && (csvDocument.table?.indexingComplete ?? true)
+            return !isSaving && isIndexed
         case #selector(addColumnAtEnd(_:)):
             return !isSaving
         case #selector(toggleFirstRowHeader(_:)):

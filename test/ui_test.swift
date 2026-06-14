@@ -406,6 +406,42 @@ c9.jumpToLine(3)
 expectEqual(c9.tableView.selectedRow, 2, "no header, line 3 selects row index 2")
 c9.close()
 
+// MARK: - Save is refused while indexing (no partial-file truncation)
+
+print("save blocked while indexing:")
+do {
+    // A file large enough that the background index does not finish before we
+    // get a chance to act. Header + 200k data rows.
+    var big = "a,b,c\n"
+    for i in 0..<200_000 { big += "\(i),x,y\n" }
+    let url = fixture("indexing.csv", big)
+    let total = 200_001 // header + data rows
+
+    let c = EditorWindowController()
+    c.window?.orderFront(nil)
+    c.loadFile(at: url)
+    // The background scan has not been pumped yet, so the index is incomplete.
+    expect(!c.isIndexed, "index incomplete right after load")
+
+    let saveItem = NSMenuItem(title: "Save",
+                              action: #selector(EditorWindowController.saveDocument(_:)),
+                              keyEquivalent: "")
+    expect(!c.validateMenuItem(saveItem), "Save menu item disabled while indexing")
+
+    // Issue a save command anyway: it must be refused, not write a truncated
+    // file over the original. This is the data-loss regression guard.
+    c.saveDocument(nil)
+    expectEqual(fileMatrix(url).count, total, "mid-index save left the file untouched (no truncation)")
+
+    // Once indexing finishes the guard clears and a real save preserves all rows.
+    expect(pump { c.isIndexed }, "indexing completes")
+    expect(c.validateMenuItem(saveItem), "Save menu item enabled once indexed")
+    c.saveDocument(nil)
+    expect(pump { !c.csvDocument.isDirty && c.isIndexed }, "save settles")
+    expectEqual(fileMatrix(url).count, total, "post-index save preserves every row")
+    c.close()
+}
+
 // MARK: - Done
 
 try? FileManager.default.removeItem(at: tmpDir)
