@@ -378,6 +378,31 @@ c8.window?.makeFirstResponder(c8.tableView)
 settle()
 c8.close()
 
+// MARK: 15. Go to line
+
+print("go to line:")
+let gotoURL = fixture("goto.csv", "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
+let c9 = openController(gotoURL)
+// Default header: the ruler starts at line 2, so line N maps to row N-2.
+expect(c9.csvDocument.hasHeader, "header on by default")
+c9.jumpToLine(2)
+expectEqual(c9.tableView.selectedRow, 0, "with header, line 2 is the first data row")
+c9.jumpToLine(4)
+expectEqual(c9.tableView.selectedRow, 2, "line 4 selects the last data row")
+c9.jumpToLine(999)
+expectEqual(c9.tableView.selectedRow, c9.csvDocument.rowCount - 1, "out-of-range clamps to last row")
+c9.jumpToLine(1)
+expectEqual(c9.tableView.selectedRow, 0, "below-range input clamps to first row")
+expect(c9.window?.firstResponder === c9.tableView, "table refocused after jump")
+// Without a header the ruler starts at line 1, so the offset shifts by one.
+c9.toggleFirstRowHeader(nil)
+expect(!c9.csvDocument.hasHeader, "header toggled off")
+c9.jumpToLine(1)
+expectEqual(c9.tableView.selectedRow, 0, "no header, line 1 is the first row")
+c9.jumpToLine(3)
+expectEqual(c9.tableView.selectedRow, 2, "no header, line 3 selects row index 2")
+c9.close()
+
 // MARK: - Done
 
 try? FileManager.default.removeItem(at: tmpDir)

@@ -10,6 +10,7 @@ final class EditorTableView: NSTableView {
     var onEscape: (() -> Bool)?
     var onMoveCell: ((_ dRow: Int, _ dCol: Int) -> Void)?
     var onStartFind: (() -> Void)?
+    var onGoToLine: (() -> Void)?
 
     // Opt out of responsive (overdraw) scrolling. The Core-Animation smooth
     // scroll path moves the table between display passes, but the line-number
@@ -23,6 +24,12 @@ final class EditorTableView: NSTableView {
             return
         }
         if event.keyCode == 53, let onEscape, onEscape() { return } // esc
+        // ":" needs Shift, so it can't live in the modifier-free block below.
+        if event.characters == ":", let onGoToLine,
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            onGoToLine()
+            return
+        }
         if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
             if let onMoveCell {
                 switch event.keyCode {
@@ -233,6 +240,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             self?.moveCellSelection(dRow: dRow, dCol: dCol)
         }
         tableView.onStartFind = { [weak self] in self?.showFind(nil) }
+        tableView.onGoToLine = { [weak self] in self?.goToLine(nil) }
         tableView.target = self
         tableView.action = #selector(tableClicked(_:))
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
@@ -1063,6 +1071,36 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
+    // MARK: - Go to line
+
+    @objc func goToLine(_ sender: Any?) {
+        guard csvDocument.rowCount > 0 else { NSSound.beep(); return }
+        let firstLine = csvDocument.hasHeader ? 2 : 1
+        let lastLine = csvDocument.rowCount + firstLine - 1
+        promptForText(title: "Go to Line",
+                      message: "Line number (\(firstLine)–\(lastLine)):",
+                      initial: "") { [weak self] text in
+            guard let self else { return }
+            guard let line = Int(text.trimmingCharacters(in: .whitespaces)) else {
+                NSSound.beep(); return
+            }
+            self.jumpToLine(line)
+        }
+    }
+
+    /// Select and reveal the row whose line number (as drawn by the ruler)
+    /// matches `line`, clamping out-of-range input to the first/last row.
+    /// Internal so the UI tests can drive it without the modal prompt.
+    func jumpToLine(_ line: Int) {
+        guard csvDocument.rowCount > 0 else { return }
+        let firstLine = csvDocument.hasHeader ? 2 : 1
+        let row = max(0, min(csvDocument.rowCount - 1, line - firstLine))
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        refreshCellCursor()
+        tableView.scrollRowToVisible(row)
+        window?.makeFirstResponder(tableView)
+    }
+
     // MARK: - Undo plumbing
 
     @objc func undo(_ sender: Any?) { undoManager?.undo() }
@@ -1194,8 +1232,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             return fontSize > 8
         case #selector(resetFontSize(_:)):
             return fontSize != Self.defaultFontSize
-        case #selector(findNext(_:)), #selector(findPrevious(_:)):
-            return !findBar.isHidden && !searchField.stringValue.isEmpty
+        case #selector(goToLine(_:)):
+            return csvDocument.rowCount > 0
         case #selector(undo(_:)):
             return undoManager?.canUndo ?? false
         case #selector(redo(_:)):

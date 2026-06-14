@@ -116,12 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Find…",
                          action: #selector(EditorWindowController.showFind(_:)), keyEquivalent: "f")
-        editMenu.addItem(withTitle: "Find Next",
-                         action: #selector(EditorWindowController.findNext(_:)), keyEquivalent: "g")
-        let findPrev = editMenu.addItem(withTitle: "Find Previous",
-                                        action: #selector(EditorWindowController.findPrevious(_:)),
-                                        keyEquivalent: "g")
-        findPrev.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(withTitle: "Go to Line…",
+                         action: #selector(EditorWindowController.goToLine(_:)), keyEquivalent: "g")
         main.addItem(submenu(editMenu, title: "Edit"))
 
         // View
