@@ -127,6 +127,8 @@ expectEqual(c.csvDocument.value(row: 0, col: 0), "WIDGET PRO, MAX", "edit commit
 expectEqual(renderedValue(c, row: 0, col: 0), "WIDGET PRO, MAX", "edit visible in table")
 expect(c.csvDocument.isDirty, "document dirty after edit")
 expect(c.window?.isDocumentEdited == true, "window shows edited marker")
+expect(c.csvDocument.isCellUnsaved(row: 0, col: 0), "edited cell marked unsaved")
+expect(!c.csvDocument.isCellUnsaved(row: 1, col: 0), "untouched cell not marked unsaved")
 
 // MARK: 3. Undo / redo
 
@@ -184,6 +186,7 @@ let beforeSave = matrix(c.csvDocument)
 c.saveDocument(nil)
 expect(pump { !c.csvDocument.isDirty }, "async save completes")
 expect(c.window?.isDocumentEdited == false, "window clean after save")
+expect(!c.csvDocument.isCellUnsaved(row: 0, col: 0), "unsaved-cell mark cleared after save")
 expect(c.window?.undoManager?.canUndo == true, "undo history survives save")
 expectEqual(fileMatrix(basicURL), beforeSave, "file on disk matches document exactly")
 

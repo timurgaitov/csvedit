@@ -4,6 +4,13 @@ import Foundation
 /// the ID is the file data-row index. No real file can reach 2^40 rows.
 let newRowIDBase = 1 << 40
 
+/// Identifies a cell by stable row ID and logical column, so the "unsaved"
+/// mark survives row/column reordering and insertions.
+struct CellRef: Hashable {
+    let rowID: Int
+    let logical: Int
+}
+
 /// Editable CSV document: an immutable CSVTable plus a sparse edit overlay.
 /// Cell edits, added/deleted rows and columns are all O(edit) in memory —
 /// the file itself is never copied or rewritten until save.
@@ -34,6 +41,11 @@ final class CSVDocument {
     /// rowID -> (logical column -> value)
     private(set) var cellEdits: [Int: [Int: String]] = [:]
 
+    /// Cells changed since the last save (or load). Highlighted in the UI and
+    /// cleared on a successful save. Keyed by stable ID so the mark tracks the
+    /// cell across row/column moves.
+    private(set) var unsavedCells: Set<CellRef> = []
+
     private var headerOffset: Int { hasHeader ? 1 : 0 }
 
     var fileDataRowCount: Int {
@@ -58,6 +70,7 @@ final class CSVDocument {
         rowIDs = nil
         nextNewRowID = newRowIDBase
         cellEdits = [:]
+        unsavedCells = []
         isDirty = false
     }
 
@@ -87,6 +100,7 @@ final class CSVDocument {
         rowIDs = nil
         nextNewRowID = newRowIDBase
         cellEdits = [:]
+        unsavedCells = []
         for i in 0..<columns {
             colMap.append(nextLogicalCol)
             _ = i
@@ -124,8 +138,18 @@ final class CSVDocument {
     func setValue(_ value: String, row: Int, col: Int) {
         guard col < colMap.count else { return }
         cellEdits[rowID(at: row), default: [:]][colMap[col]] = value
+        unsavedCells.insert(CellRef(rowID: rowID(at: row), logical: colMap[col]))
         isDirty = true
     }
+
+    /// True if the cell at this display position has unsaved changes.
+    func isCellUnsaved(row: Int, col: Int) -> Bool {
+        guard col < colMap.count, !unsavedCells.isEmpty else { return false }
+        return unsavedCells.contains(CellRef(rowID: rowID(at: row), logical: colMap[col]))
+    }
+
+    /// Clear all unsaved-change marks (the model now matches what is on disk).
+    func clearUnsavedCells() { unsavedCells.removeAll() }
 
     // MARK: - Structure
 

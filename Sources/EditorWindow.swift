@@ -186,6 +186,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     private static let cellID = NSUserInterfaceItemIdentifier("cell")
 
+    /// Light-blue tint marking cells edited since the last save. Slightly
+    /// stronger in dark mode so it reads against the dark background.
+    private static let unsavedCellColor = NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return dark
+            ? NSColor(calibratedRed: 0.20, green: 0.45, blue: 0.85, alpha: 0.35)
+            : NSColor(calibratedRed: 0.40, green: 0.65, blue: 1.0, alpha: 0.30)
+    }
+
     private let numberFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -516,6 +525,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
             }
         }
         cell.wantsLayer = true
+        let isUnsaved = csvDocument.isCellUnsaved(row: row, col: colIndex)
+        cell.layer?.backgroundColor = isUnsaved ? Self.unsavedCellColor.cgColor : nil
         let isCursor = row == tableView.selectedRow && colIndex == currentCol
         cell.layer?.borderWidth = isCursor ? 2 : 0
         cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
@@ -1160,6 +1171,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
         tableView.isEnabled = true
         csvDocument.url = url
         csvDocument.isDirty = false
+        csvDocument.clearUnsavedCells()
+        // Repaint the visible rows so the unsaved-cell tint clears. (No file
+        // reload — that caused a blink; this only redraws on-screen cells.)
+        let visible = tableView.rows(in: tableView.visibleRect)
+        if visible.length > 0 {
+            tableView.reloadData(forRowIndexes: IndexSet(integersIn: visible.location..<(visible.location + visible.length)),
+                                 columnIndexes: IndexSet(integersIn: 0..<max(1, tableView.numberOfColumns)))
+        }
         window?.title = url.lastPathComponent
         window?.representedURL = url
         window?.isDocumentEdited = false
