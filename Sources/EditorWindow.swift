@@ -11,6 +11,12 @@ final class EditorTableView: NSTableView {
     var onMoveCell: ((_ dRow: Int, _ dCol: Int) -> Void)?
     var onStartFind: (() -> Void)?
 
+    // Opt out of responsive (overdraw) scrolling. The Core-Animation smooth
+    // scroll path moves the table between display passes, but the line-number
+    // ruler only repaints per display pass, so it visibly trailed the rows.
+    // Standard scrolling keeps the table and ruler in lockstep.
+    override class var isCompatibleWithResponsiveScrolling: Bool { false }
+
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36 || event.keyCode == 76, let onReturnKey { // return / enter
             onReturnKey()
@@ -76,6 +82,8 @@ final class FindSearchField: NSSearchField {
 final class LineNumberRulerView: NSRulerView {
     weak var tableView: NSTableView?
     var font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+    /// First displayed row's line number (2 when the first file row is a header).
+    var firstLineNumber = 1
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
         guard let tableView else { return }
@@ -86,7 +94,7 @@ final class LineNumberRulerView: NSRulerView {
         let range = tableView.rows(in: tableView.visibleRect)
         for row in range.location..<(range.location + range.length) {
             let rowRect = convert(tableView.rect(ofRow: row), from: tableView)
-            let label = String(row + 1) as NSString
+            let label = String(row + firstLineNumber) as NSString
             let size = label.size(withAttributes: attrs)
             label.draw(at: NSPoint(x: ruleThickness - size.width - 6,
                                    y: rowRect.midY - size.height / 2),
@@ -383,7 +391,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     private func updateLineNumberWidth() {
         guard let ruler = lineNumberRuler else { return }
-        let widest = "\(max(csvDocument.rowCount, 1))" as NSString
+        // With a header, the first data row is file line 2, so numbering is
+        // offset by one and the widest number is rowCount + 1.
+        ruler.firstLineNumber = csvDocument.hasHeader ? 2 : 1
+        let lastLine = csvDocument.rowCount + ruler.firstLineNumber - 1
+        let widest = "\(max(lastLine, 1))" as NSString
         let width = widest.size(withAttributes: [.font: ruler.font]).width
         ruler.ruleThickness = max(28, ceil(width) + 12)
         ruler.needsDisplay = true
